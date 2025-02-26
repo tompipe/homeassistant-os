@@ -36,6 +36,26 @@ def test_init(shell):
 
 
 @pytest.mark.dependency(depends=["test_init"])
+def test_rauc_status(shell, shell_json):
+    rauc_status = shell.run_check("rauc status --output-format=shell --detailed")
+    # RAUC_BOOT_PRIMARY won't be set if correct grub env is missing
+    assert "RAUC_BOOT_PRIMARY='kernel.0'" in rauc_status
+    assert "rauc-WARNING" not in "\n".join(rauc_status)
+
+    os_info = shell_json("ha os info --no-progress --raw-json")
+    expected_version = os_info.get("data", {}).get("version")
+    assert expected_version is not None and expected_version != ""
+
+    boot_slots = filter(lambda x: "RAUC_SYSTEM_SLOTS=" in x, rauc_status)
+    boot_slots = next(boot_slots, "").replace("RAUC_SYSTEM_SLOTS='", "").replace("'", "")
+    assert boot_slots != ""
+    booted_idx = boot_slots.split(" ").index("kernel.0")
+    assert booted_idx >= 0
+
+    assert f"RAUC_SLOT_STATUS_BUNDLE_VERSION_{booted_idx + 1}='{expected_version}'" in rauc_status
+
+
+@pytest.mark.dependency(depends=["test_init"])
 def test_dmesg(shell):
     output = shell.run_check("dmesg")
     _LOGGER.info("%s", "\n".join(output))
@@ -51,3 +71,41 @@ def test_supervisor_logs(shell):
 def test_systemctl_status(shell):
     output = shell.run_check("systemctl --no-pager -l status -a || true")
     _LOGGER.info("%s", "\n".join(output))
+
+@pytest.mark.dependency(depends=["test_init"])
+def test_systemctl_check_no_failed(shell):
+    output = shell.run_check("systemctl --no-pager -l list-units --state=failed")
+    assert "0 loaded units listed." in output, f"Some units failed:\n{"\n".join(output)}"
+
+
+@pytest.mark.dependency(depends=["test_init"])
+def test_custom_swap_size(shell, target):
+    output = shell.run_check("stat -c '%s' /mnt/data/swapfile")
+    # set new swap size to half of the previous size - round to 4k blocks
+    new_swap_size = (int(output[0]) // 2 // 4096) * 4096
+    shell.run_check(f"echo 'SWAPSIZE={new_swap_size/1024/1024}M' > /etc/default/haos-swapfile; reboot")
+    # reactivate ShellDriver to handle login again
+    target.deactivate(shell)
+    target.activate(shell)
+    output = shell.run_check("stat -c '%s' /mnt/data/swapfile")
+    assert int(output[0]) == new_swap_size, f"Incorrect swap size {new_swap_size}B: {output}"
+
+
+@pytest.mark.dependency(depends=["test_custom_swap_size"])
+def test_no_swap(shell, target):
+    output = shell.run_check("echo 'SWAPSIZE=0' > /etc/default/haos-swapfile; reboot")
+    # reactivate ShellDriver to handle login again
+    target.deactivate(shell)
+    target.activate(shell)
+    output = shell.run_check("systemctl --no-pager -l list-units --state=failed")
+    assert "0 loaded units listed." in output, f"Some units failed:\n{"\n".join(output)}"
+    swapon = shell.run_check("swapon --show")
+    assert swapon == [], f"Swapfile still exists: {swapon}"
+
+
+@pytest.mark.dependency(depends=["test_init"])
+def test_kernel_not_tainted(shell):
+    """Check if the kernel is not tainted - do it at the end of the
+    test suite to increase the chance of catching issues."""
+    output = shell.run_check("cat /proc/sys/kernel/tainted")
+    assert "\n".join(output) == "0", f"Kernel tainted: {output}"

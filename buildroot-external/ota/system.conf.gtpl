@@ -1,18 +1,14 @@
 [system]
 compatible={{ env "ota_compatible" }}
 mountprefix=/run/rauc
-statusfile=/mnt/data/rauc.db
+statusfile=/mnt/boot/rauc.db
 {{- if eq (env "BOOTLOADER") "tryboot" }}
 bootloader=custom
 {{- else }}
 bootloader={{ env "BOOTLOADER" }}
 {{- end }}
 {{- if eq (env "BOOTLOADER") "grub" }}
-{{- if eq (env "BOOT_SYS") "efi" }}
 grubenv=/mnt/boot/EFI/BOOT/grubenv
-{{- else }}
-grubenv=/mnt/boot/grubenv
-{{- end }}
 {{- end }}
 
 {{- if eq (env "BOOTLOADER") "tryboot" }}
