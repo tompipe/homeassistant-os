@@ -34,11 +34,34 @@ install_boot() {
     else
         # Backup boot config
         cp -f "${BOOT_MNT}"/*.txt "${BOOT_TMP}/" || true
+        cp -f "${BOOT_MNT}"/EFI/BOOT/grubenv "${BOOT_TMP}/" || true
 
         cp -rf "${BOOT_NEW}"/* "${BOOT_MNT}/"
 
         # Restore boot config
         cp -f "${BOOT_TMP}"/*.txt "${BOOT_MNT}/" || true
+        cp -f "${BOOT_TMP}"/grubenv "${BOOT_MNT}"/EFI/BOOT/ || true
+    fi
+
+    # Add CM5 support for Yellow. Can be removed in HAOS 15.
+    if [ "$RAUC_SYSTEM_COMPATIBLE" = "haos-yellow" ]; then
+        if ! grep -q "\[cm5\]" "${BOOT_MNT}/config.txt"; then
+            echo "Adding CM5 config to config.txt"
+
+            # Remove old single device_tree config and add CM-specific ones
+            sed -i '/device_tree=bcm2711-rpi-cm4-ha-yellow.dtb/d; s/\[all\]/\[cm4\]\ndevice_tree=bcm2711-rpi-cm4-ha-yellow.dtb\n\n\[cm5\]\ndevice_tree=bcm2712-rpi-cm5-ha-yellow.dtb\n\n\[all\]/' "${BOOT_MNT}/config.txt"
+        fi
+    fi
+
+    # Prepare rauc.db for migration, should be removed in HAOS 16
+    # (along with raucdb-migrate.service and related raucdb-update changes)
+    if [ -f /mnt/data/rauc.db ]; then
+        # shellcheck disable=SC1091
+        . /etc/os-release
+        # Do not migrate if already running on OS 15.
+        if [ "${VERSION_ID%%.*}" != "15" ]; then
+            touch /mnt/boot/migrate-raucdb
+        fi
     fi
 }
 
@@ -94,14 +117,6 @@ post_install_kernel() {
         systemctl start mnt-boot.mount
     fi
 
-    # OS 7 -> 8 upgrade path:
-    # If grub is installed, and the current system lacks GRUB environment
-    # manipulation tools, manually create a grubenv for the right boot slot
-    if [ -f "${BOOT_MNT}"/EFI/BOOT/grub.cfg ] && ! command -v grub-editenv > /dev/null; then
-        cp -f "${BOOT_MNT}/EFI/BOOT/grubenv-${RAUC_SLOT_BOOTNAME}" "${BOOT_MNT}"/EFI/BOOT/grubenv
-        echo "Copied default GRUB environment grubenv-${RAUC_SLOT_BOOTNAME} as grubenv."
-    fi
-
     # Copy new OS to appropriate directory
     if [ "$RAUC_SYSTEM_COMPATIBLE" = "haos-rpi5-64" ]; then
         rm -rf "${BOOT_MNT}/slot-${RAUC_SLOT_BOOTNAME}"
@@ -116,20 +131,8 @@ case "$1" in
      install-check)
          if [ "$RAUC_MF_COMPATIBLE" = "$RAUC_SYSTEM_COMPATIBLE" ]; then
              # Check if GRUB env has been corrupted. This is only problematic
-             # with OS 8, where compatible matches.
+             # with OS 8+, where compatible matches.
              check_grubenv
-             exit 0
-         fi
-         # Be compatible with hassos OS ID
-         # shellcheck disable=SC3060
-         rauc_os_compatible=${RAUC_MF_COMPATIBLE/haos-/hassos-}
-         if [ "$rauc_os_compatible" = "$RAUC_SYSTEM_COMPATIBLE" ]; then
-             exit 0
-         fi
-         # generic-x86-64: Be compatible with intel-nuc
-         # shellcheck disable=SC3060
-         rauc_board_compatible=${rauc_os_compatible/generic-x86-64/intel-nuc}
-         if [ "${rauc_board_compatible}" = "$RAUC_SYSTEM_COMPATIBLE" ]; then
              exit 0
          fi
          echo "Compatible does not match!" 1>&2
@@ -143,6 +146,9 @@ case "$1" in
         fi
         ;;
     slot-post-install)
+        if [ "${RAUC_SLOT_CLASS}" = "boot" ]; then
+            post_install_boot
+        fi
         if [ "${RAUC_SLOT_CLASS}" = "kernel" ]; then
             post_install_kernel
         fi
